@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "d3.js": "^0.0.2-security",
+    "ffmpeg": "^0.0.4"
+  }
+}

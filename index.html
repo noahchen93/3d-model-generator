@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <title>Gemini 3D 设计平台</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: #1a1a1a; color: #f0f0f0; margin: 0; overflow: hidden; }
+        #mainContainer { display: flex; width: 100vw; height: 100vh; }
+        #viewport { flex-grow: 1; touch-action: none; }
+        #sidebar { width: 350px; background-color: #2c2c2c; border-left: 1px solid #444; padding: 15px; box-sizing: border-box; overflow-y: auto; display: flex; flex-direction: column; }
+        .control-group { margin-bottom: 15px; border-bottom: 1px solid #444; padding-bottom: 15px; }
+        .control-group:last-child { border-bottom: none; }
+        .control-group h3 { margin-top: 0; margin-bottom: 10px; color: #00aaff; font-size: 16px; }
+        .control-row { margin-bottom: 10px; display: flex; flex-direction: column; }
+        label, .param-slider-label { margin-bottom: 5px; font-size: 14px; }
+        select, input, button { width: 100%; font-size: 14px; padding: 8px; border-radius: 5px; border: 1px solid #555; background-color: #3a3a3a; color: #f0f0f0; box-sizing: border-box; }
+        input[type="color"] { padding: 2px; height: 38px; }
+        button { border-color: #007bff; background-color: #007bff; color: white; cursor: pointer; transition: background-color 0.3s; }
+        button:hover { background-color: #0056b3; }
+        .param-slider-label { display: flex; justify-content: space-between; }
+        #loadDesignInput { display: none; }
+    </style>
+</head>
+<body>
+    <div id="mainContainer">
+        <div id="viewport"></div>
+        <div id="sidebar">
+            <div class="control-group">
+                <h3 id="lang_generator">核心生成器</h3>
+                <div class="control-row"><label for="styleSelector" id="lang_design_mode">设计模式:</label><select id="styleSelector"><option value="functional-vase">实用花瓶</option><option value="bio-chess">生物融合棋子</option><option value="organic-noise">有机噪声</option><option value="wild-tube">脑洞曲线</option><option value="random-convex">随机凸包</option></select></div>
+                <div id="subTypeContainer"></div>
+            </div>
+            <div id="paramsContainer"></div>
+            <div class="control-group">
+                <h3 id="lang_material_color">材质与颜色</h3>
+                <div class="control-row"><label for="colorPicker" id="lang_model_color">模型颜色:</label><input type="color" id="colorPicker" value="#cccccc"></div>
+                <div class="control-row"><div class="param-slider-label"><span id="lang_metalness">金属质感</span><span id="metalnessValue">0.5</span></div><input type="range" id="metalnessSlider" min="0" max="1" value="0.5" step="0.01"></div>
+                <div class="control-row"><div class="param-slider-label"><span id="lang_roughness">粗糙度</span><span id="roughnessValue">0.5</span></div><input type="range" id="roughnessSlider" min="0" max="1" value="0.5" step="0.01"></div>
+            </div>
+            <div class="control-group">
+                 <h3 id="lang_operations">操作</h3>
+                 <div class="control-row"><button id="generateBtn">重新生成随机种子</button></div>
+                 <div class="control-row"><button id="saveDesignBtn">保存设计</button></div>
+                 <div class="control-row"><button id="loadDesignBtn">加载设计</button><input type="file" id="loadDesignInput" accept=".json"></div>
+                 <div class="control-row"><button id="downloadBtn">下载为 .STL 文件</button></div>
+                 <div class="control-row"><button id="langBtn">切换语言 (Switch Language)</button></div>
+            </div>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { STLExporter } from 'three/addons/exporters/STLExporter.js';
+        import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
+        import { ImprovedNoise } from 'three/addons/math/ImprovedNoise.js';
+
+        let scene, camera, renderer, controls, activeObject;
+        let uiControls = {};
+        let randomSeed = Math.random();
+        let currentLang = 'zh';
+
+        const LANG = {
+            zh: {
+                generator: "核心生成器",
+                design_mode: "设计模式:",
+                material_color: "材质与颜色",
+                model_color: "模型颜色:",
+                metalness: "金属质感",
+                roughness: "粗糙度",
+                operations: "操作",
+                generate: "重新生成随机种子",
+                save: "保存设计",
+                load: "加载设计",
+                download: "下载为 .STL 文件",
+                // ... and so on for all other strings
+            },
+            en: {
+                generator: "Core Generator",
+                design_mode: "Design Mode:",
+                material_color: "Material & Color",
+                model_color: "Model Color:",
+                metalness: "Metalness",
+                roughness: "Roughness",
+                operations: "Operations",
+                generate: "New Random Seed",
+                save: "Save Design",
+                load: "Load Design",
+                download: "Download as .STL",
+            }
+        };
+
+        const UI_DEFINITIONS = {
+            'functional-vase': { params: { '形态': { 'height': { label: '高度', min: 50, max: 300, value: 180 }, 'width': { label: '宽度', min: 20, max: 100, value: 50 }, 'lip': { label: '瓶口', min: 10, max: 80, value: 40 }, 'complexity': { label: '复杂度', min: 3, max: 10, value: 5 }, 'wall': { label: '壁厚', min: 1, max: 20, value: 5, step: 0.5 } } } },
+            'bio-chess': { subType: { id: 'p_chessPiece', label: '棋子类型', options: { 'pawn': '兵', 'rook': '车', 'knight': '马', 'bishop': '象', 'queen': '后', 'king': '王' } }, params: { '生物融合': { 'noiseStr': { label: '噪声强度', min: 0, max: 15, value: 4, step: 0.1 }, 'spikeThr': { label: '异变阈值', min: 0.5, max: 0.95, value: 0.7, step: 0.01 }, 'spikeStr': { label: '异变强度', min: 0, max: 50, value: 15 } } } },
+            'organic-noise': { params: { '有机噪声': { 'noiseStrength': { label: '噪声强度', min: 1, max: 80, value: 25 }, 'noiseScale': { label: '噪声粒度', min: 0.01, max: 0.5, value: 0.1, step: 0.01 } } } },
+            'wild-tube': { params: { '脑洞曲线': { 'pathNodes': { label: '路径节点', min: 3, max: 20, value: 10 }, 'radius': { label: '管道半径', min: 1, max: 50, value: 10 }, 'range': { label: '路径范围', min: 50, max: 500, value: 200 } } } },
+            'random-convex': { params: { '随机凸包': { 'points': { label: '顶点数量', min: 4, max: 300, value: 50 } } } }
+        };
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a1a1a);
+            const viewport = document.getElementById('viewport');
+            camera = new THREE.PerspectiveCamera(75, viewport.clientWidth / viewport.clientHeight, 0.1, 5000);
+            camera.position.set(0, 150, 300);
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(viewport.clientWidth, viewport.clientHeight);
+            viewport.appendChild(renderer.domElement);
+            scene.add(new THREE.AmbientLight(0xffffff, 1.5));
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 3.5);
+            directionalLight.position.set(0.8, 1, 0.5);
+            scene.add(directionalLight);
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+
+            Object.assign(uiControls, { styleSelector: document.getElementById('styleSelector'), subTypeContainer: document.getElementById('subTypeContainer'), paramsContainer: document.getElementById('paramsContainer'), colorPicker: document.getElementById('colorPicker'), metalnessSlider: document.getElementById('metalnessSlider'), roughnessSlider: document.getElementById('roughnessSlider'), metalnessValue: document.getElementById('metalnessValue'), roughnessValue: document.getElementById('roughnessValue'), loadDesignInput: document.getElementById('loadDesignInput') });
+            
+            document.getElementById('generateBtn').addEventListener('click', () => { randomSeed = Math.random(); generateModel(); });
+            document.getElementById('saveDesignBtn').addEventListener('click', saveDesign);
+            document.getElementById('loadDesignBtn').addEventListener('click', () => uiControls.loadDesignInput.click());
+            uiControls.loadDesignInput.addEventListener('change', loadDesign);
+            document.getElementById('downloadBtn').addEventListener('click', downloadSTL);
+            document.getElementById('langBtn').addEventListener('click', switchLanguage);
+            window.addEventListener('resize', onWindowResize);
+            uiControls.styleSelector.addEventListener('change', () => setupUIAndGenerate());
+
+            uiControls.colorPicker.addEventListener('input', updateMaterial);
+            uiControls.metalnessSlider.addEventListener('input', (e) => { uiControls.metalnessValue.textContent = parseFloat(e.target.value).toFixed(2); updateMaterial(); });
+            uiControls.roughnessSlider.addEventListener('input', (e) => { uiControls.roughnessValue.textContent = parseFloat(e.target.value).toFixed(2); updateMaterial(); });
+
+            setupUIAndGenerate();
+            animate();
+        }
+
+        function switchLanguage() {
+            currentLang = currentLang === 'zh' ? 'en' : 'zh';
+            setupUIAndGenerate();
+        }
+
+        function setupUIAndGenerate(paramsToLoad = null) {
+            const lang = LANG[currentLang];
+            document.getElementById('lang_generator').textContent = lang.generator;
+            document.getElementById('lang_design_mode').textContent = lang.design_mode;
+            document.getElementById('lang_material_color').textContent = lang.material_color;
+            document.getElementById('lang_model_color').textContent = lang.model_color;
+            document.getElementById('lang_metalness').textContent = lang.metalness;
+            document.getElementById('lang_roughness').textContent = lang.roughness;
+            document.getElementById('lang_operations').textContent = lang.operations;
+            document.getElementById('generateBtn').textContent = lang.generate;
+            document.getElementById('saveDesignBtn').textContent = lang.save;
+            document.getElementById('loadDesignBtn').textContent = lang.load;
+            document.getElementById('downloadBtn').textContent = lang.download;
+
+            if (paramsToLoad) uiControls.styleSelector.value = paramsToLoad.style;
+            const style = uiControls.styleSelector.value;
+            const definition = UI_DEFINITIONS[style];
+            let subTypeHTML = '';
+            let paramsHTML = '';
+
+            if (definition.subType) {
+                const st = definition.subType;
+                subTypeHTML += `<div class="control-row"><label for="p_${st.id}">${st.label}:</label><select id="p_${st.id}">`;
+                for (const [value, text] of Object.entries(st.options)) subTypeHTML += `<option value="${value}">${text}</option>`;
+                subTypeHTML += `</select></div>`;
+            }
+
+            if (definition.params) {
+                for (const [groupName, groupParams] of Object.entries(definition.params)) {
+                    paramsHTML += `<div class="control-group"><h3>${groupName}</h3>`;
+                    for (const [paramId, param] of Object.entries(groupParams)) {
+                        paramsHTML += `<div class="control-row" id="p_${paramId}_row"><div class="param-slider-label"><span id="p_${paramId}_label">${param.label}</span><span id="p_${paramId}_val">${param.value}</span></div><input type="range" id="p_${paramId}" min="${param.min}" max="${param.max}" value="${param.value}" step="${param.step || 1}"></div>`;
+                    }
+                    paramsHTML += `</div>`;
+                }
+            }
+
+            uiControls.subTypeContainer.innerHTML = subTypeHTML;
+            uiControls.paramsContainer.innerHTML = paramsHTML + `<div class="control-group"><h3>全局精度</h3><div class="control-row"><div class="param-slider-label"><span>模型精细度</span><span id="p_precision_val">80</span></div><input type="range" id="p_precision" min="10" max="100" value="80" step="1"></div></div>`;
+            
+            if (paramsToLoad) applyParamsToUI(paramsToLoad);
+
+            document.querySelectorAll('#sidebar input, #sidebar select').forEach(el => {
+                el.addEventListener('input', () => {
+                    const label = document.getElementById(`${el.id}_val`);
+                    if(label && el.type === 'range') label.textContent = parseFloat(el.value).toFixed(String(el.step).includes('.') ? 2 : 0);
+                    generateModel();
+                });
+            });
+
+            generateModel();
+        }
+
+        function getParams() {
+            const params = { seed: randomSeed };
+            document.querySelectorAll('#sidebar input, #sidebar select').forEach(el => {
+                if (el.offsetParent !== null || el.type === 'hidden') {
+                    const key = el.id.replace(/^p_/, '');
+                    params[key] = el.tagName === 'SELECT' ? el.value : (el.type === 'color' ? el.value : parseFloat(el.value));
+                }
+            });
+            return params;
+        }
+
+        function generateModel() {
+            if (activeObject) { scene.remove(activeObject); activeObject.geometry.dispose(); if(activeObject.material) activeObject.material.dispose(); }
+            const params = getParams();
+            let geometry;
+            try {
+                switch (params.styleSelector) {
+                    case 'functional-vase': geometry = createVaseGeometry(params); break;
+                    case 'bio-chess': geometry = createChessPieceGeometry(params); break;
+                    case 'organic-noise': geometry = createOrganicNoiseGeometry(params); break;
+                    case 'wild-tube': geometry = createWildTubeGeometry(params); break;
+                    case 'random-convex':
+                    default: geometry = createConvexHullGeometry(params); break;
+                }
+                const material = new THREE.MeshStandardMaterial({ color: params.colorPicker, metalness: params.metalnessSlider, roughness: params.roughnessSlider, side: THREE.DoubleSide });
+                activeObject = new THREE.Mesh(geometry, material);
+                scene.add(activeObject);
+            } catch (e) {
+                console.error("Geometry generation failed:", e);
+                activeObject = new THREE.Mesh(new THREE.BoxGeometry(50,50,50), new THREE.MeshStandardMaterial({color: 0xff0000}));
+                scene.add(activeObject);
+            }
+        }
+        
+        function updateMaterial() {
+            if (!activeObject || !activeObject.material) return;
+            const params = getParams();
+            activeObject.material.color.set(params.colorPicker);
+            activeObject.material.metalness = params.metalnessSlider;
+            activeObject.material.roughness = params.roughnessSlider;
+        }
+
+        function createVaseGeometry(p) {
+            const { height, width, lip, complexity, precision, seed, wall } = p;
+            const rng = new (function() { let s = seed; this.random = function() { s = Math.sin(s) * 10000; return s - Math.floor(s); }})();
+            const controlPoints = [];
+            controlPoints.push(new THREE.Vector3(width * 0.7 + rng.random() * 10, 0, 0));
+            for (let i = 1; i < complexity; i++) { controlPoints.push(new THREE.Vector3((rng.random() * width) + 20, (i / (complexity - 1)) * height * 0.9, 0)); }
+            controlPoints.push(new THREE.Vector3(lip, height * 0.95, 0));
+            controlPoints.push(new THREE.Vector3(lip + 5, height, 0));
+            const curve = new THREE.CatmullRomCurve3(controlPoints);
+            const outerWallPoints = curve.getPoints(Math.floor(12 + (precision / 100) * 88));
+            const shape = new THREE.Shape();
+            shape.moveTo(outerWallPoints[0].x, outerWallPoints[0].y);
+            for (let i = 1; i < outerWallPoints.length; i++) { shape.lineTo(outerWallPoints[i].x, outerWallPoints[i].y); }
+            const innerWallPoints = outerWallPoints.map(pt => new THREE.Vector2(Math.max(1, pt.x - wall), pt.y));
+            shape.lineTo(innerWallPoints[innerWallPoints.length - 1].x, innerWallPoints[innerWallPoints.length - 1].y);
+            for (let i = innerWallPoints.length - 2; i >= 0; i--) {
+                shape.lineTo(innerWallPoints[i].x, innerWallPoints[i].y);
+            }
+            shape.lineTo(outerWallPoints[0].x, outerWallPoints[0].y);
+            const geom = new THREE.LatheGeometry(shape.getPoints(), Math.floor(16 + (precision / 100) * 84));
+            geom.center();
+            return geom;
+        }
+
+        function createChessPieceGeometry(p) {
+            const { p_chessPiece: chessPiece, noiseStr, spikeThr, spikeStr, precision, seed } = p;
+            const rng = new (function() { let s = seed; this.random = function() { s = Math.sin(s) * 10000; return s - Math.floor(s); }})();
+            let points = [];
+            const h = 160, r = 40;
+            switch (chessPiece) {
+                case 'pawn': points = [new THREE.Vector2(r*.8,0),new THREE.Vector2(r*.8,h*.1),new THREE.Vector2(r*.6,h*.15),new THREE.Vector2(r*.5,h*.4),new THREE.Vector2(r*.9,h*.5),new THREE.Vector2(r*.9,h*.6),new THREE.Vector2(0,h*.8)]; break;
+                case 'rook': points = [new THREE.Vector2(r,0),new THREE.Vector2(r,h*.1),new THREE.Vector2(r*.8,h*.2),new THREE.Vector2(r*.8,h*.8),new THREE.Vector2(r,h*.85),new THREE.Vector2(r,h*.9),new THREE.Vector2(r*.9,h*.9),new THREE.Vector2(r*.9,h*.95),new THREE.Vector2(r,h*.95),new THREE.Vector2(r,h),new THREE.Vector2(0,h)]; break;
+                case 'knight': points = [new THREE.Vector2(r,0),new THREE.Vector2(r,h*.1),new THREE.Vector2(r*.8,h*.2),new THREE.Vector2(r*.7,h*.5),new THREE.Vector2(r*1.2,h*.7),new THREE.Vector2(r*.8,h*.9),new THREE.Vector2(r*.4,h),new THREE.Vector2(0,h)]; break;
+                case 'bishop': points = [new THREE.Vector2(r*.9,0),new THREE.Vector2(r*.9,h*.1),new THREE.Vector2(r*.7,h*.2),new THREE.Vector2(r*.6,h*.6),new THREE.Vector2(r*.8,h*.8),new THREE.Vector2(r*.5,h*.9),new THREE.Vector2(0,h*1.05)]; break;
+                case 'queen': points = [new THREE.Vector2(r,0),new THREE.Vector2(r,h*.1),new THREE.Vector2(r*.5,h*.2),new THREE.Vector2(r*.9,h*.6),new THREE.Vector2(r*.6,h*.85),new THREE.Vector2(r*1.1,h*.95),new THREE.Vector2(0,h*1.1)]; break;
+                case 'king': points = [new THREE.Vector2(r,0),new THREE.Vector2(r,h*.1),new THREE.Vector2(r*.6,h*.2),new THREE.Vector2(r*.8,h*.7),new THREE.Vector2(r*.7,h*.9),new THREE.Vector2(r*.8,h*1.05),new THREE.Vector2(r*.2,h*1.1),new THREE.Vector2(r*.2,h*1.15),new THREE.Vector2(0,h*1.15)]; break;
+            }
+            const baseGeometry = new THREE.LatheGeometry(points, Math.floor(16 + (precision / 100) * 112));
+            const position = baseGeometry.attributes.position;
+            const noise = new ImprovedNoise();
+            const time = rng.random() * 10;
+            const noiseScale = 0.05 + (rng.random() * 0.05);
+            for (let i = 0; i < position.count; i++) {
+                const v = new THREE.Vector3().fromBufferAttribute(position, i);
+                const p = v.clone().multiplyScalar(noiseScale);
+                const n = Math.abs(noise.noise(p.x + time, p.y + time, p.z + time));
+                v.addScaledVector(v.clone().normalize(), n * noiseStr);
+                if (n > spikeThr) v.addScaledVector(v.clone().normalize(), (n - spikeThr) * spikeStr);
+                position.setXYZ(i, v.x, v.y, v.z);
+            }
+            baseGeometry.computeVertexNormals();
+            baseGeometry.center();
+            return baseGeometry;
+        }
+
+        function createOrganicNoiseGeometry(p) {
+            const { precision, seed, noiseStrength, noiseScale } = p;
+            const rng = new (function() { let s = seed; this.random = function() { s = Math.sin(s) * 10000; return s - Math.floor(s); }})();
+            const geometry = new THREE.SphereGeometry(80, Math.floor(16 + (precision / 100) * 112), Math.floor(16 + (precision / 100) * 112));
+            const position = geometry.attributes.position;
+            const noise = new ImprovedNoise();
+            const time = rng.random() * 10;
+            for (let i = 0; i < position.count; i++) {
+                const v = new THREE.Vector3().fromBufferAttribute(position, i);
+                const p = v.clone().multiplyScalar(noiseScale);
+                const n = noise.noise(p.x + time, p.y + time, p.z + time);
+                v.addScaledVector(v.clone().normalize(), n * noiseStrength);
+                position.setXYZ(i, v.x, v.y, v.z);
+            }
+            geometry.computeVertexNormals();
+            return geometry;
+        }
+
+        function createWildTubeGeometry(p) {
+            const { precision, seed, pathNodes, radius, range } = p;
+            const rng = new (function() { let s = seed; this.random = function() { s = Math.sin(s) * 10000; return s - Math.floor(s); }})();
+            class CustomSinCurve extends THREE.Curve {
+                constructor(scale = 1) {
+                    super();
+                    this.pathPoints = Array.from({length: pathNodes}, () => new THREE.Vector3((rng.random() - 0.5) * range, (rng.random() - 0.5) * range, (rng.random() - 0.5) * range));
+                    this.curve = new THREE.CatmullRomCurve3(this.pathPoints, true, 'catmullrom', 0.5);
+                    this.scale = scale;
+                }
+                getPoint(t) { return this.curve.getPoint(t).multiplyScalar(this.scale); }
+            }
+            return new THREE.TubeGeometry(new CustomSinCurve(1), Math.floor(40 + (precision / 100) * 160), radius, Math.floor(8 + (precision / 100) * 56), true);
+        }
+
+        function createConvexHullGeometry(p) {
+            const { seed, points: numPoints } = p;
+            const rng = new (function() { let s = seed; this.random = function() { s = Math.sin(s) * 10000; return s - Math.floor(s); }})();
+            const points = [];
+            for (let i = 0; i < numPoints; i++) { points.push(new THREE.Vector3((rng.random() - 0.5) * 150, (rng.random() - 0.5) * 150, (rng.random() - 0.5) * 150)); }
+            return new ConvexGeometry(points);
+        }
+
+        function saveDesign() {
+            const design = getParams();
+            const jsonString = JSON.stringify(design, null, 2);
+            const blob = new Blob([jsonString], {type: "application/json"});
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `gemini-3d-design-${design.styleSelector}-${Date.now()}.json`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        }
+
+        function loadDesign(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const params = JSON.parse(e.target.result);
+                    setupUIAndGenerate(params);
+                } catch (err) {
+                    alert("加载设计文件失败！文件格式可能已损坏。\n" + err);
+                }
+            };
+            reader.readAsText(file);
+            event.target.value = '';
+        }
+
+        function applyParamsToUI(params) {
+            randomSeed = params.seed || Math.random();
+            for (const key in params) {
+                const el = document.getElementById(`p_${key}`) || document.getElementById(key);
+                if (el) {
+                    if (el.type === 'range' || el.type === 'text' || el.type === 'color') {
+                        el.value = params[key];
+                    } else if (el.tagName === 'SELECT') {
+                        el.value = params[key];
+                    }
+                    const label = document.getElementById(`p_${key}_val`);
+                    if(label && el.type === 'range') label.textContent = parseFloat(params[key]).toFixed(String(el.step).includes('.') ? 2 : 0);
+                }
+            }
+        }
+
+        function downloadSTL() {
+            if (!activeObject) { alert("没有模型可供下载。"); return; }
+            const exporter = new STLExporter();
+            const result = exporter.parse(activeObject, { binary: true });
+            const blob = new Blob([result], { type: 'application/octet-stream' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = `gemini-3d-design-${getParams().styleSelector}-${Date.now()}.stl`;
+            link.click();
+            URL.revokeObjectURL(link.href);
+        }
+
+        function onWindowResize() {
+            const viewport = document.getElementById('viewport');
+            camera.aspect = viewport.clientWidth / viewport.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(viewport.clientWidth, viewport.clientHeight);
+        }
+
+        function animate() { requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera); }
+
+        init();
+    </script>
+</body>
+</html>
